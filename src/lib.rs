@@ -1,4 +1,13 @@
-use nih_plug::prelude::*;
+use nih_plug::prelude::{
+    nih_export_clap, nih_export_vst3, 
+    AudioIOLayout, BufferConfig, Buffer, AuxiliaryBuffers, // Added AuxiliaryBuffers
+    Editor, AsyncExecutor, 
+    FloatParam, IntParam, BoolParam, FloatRange, IntRange, 
+    InitContext, Params, // Added Param and Params
+    MidiConfig, 
+    Plugin, ProcessContext, ProcessStatus,
+    ClapPlugin, ClapFeature, Vst3Plugin, Vst3SubCategory, 
+};
 use nih_plug_webview::{WebViewEditor, HTMLSource};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
@@ -17,8 +26,8 @@ pub struct MidiNote {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 enum Action {
-    SetLockZone { start: usize, end: usize, index: usize }, 
-    ClearLockZone { index: usize }, 
+    SetLockZone { start: usize, end: usize, _index: usize }, 
+    ClearLockZone { _index: usize }, 
     ToggleSync { sync: bool },
     SetInternalBpm { bpm: f32 },
     SetRoot { root: i32 },
@@ -32,6 +41,8 @@ enum Action {
 
 #[derive(Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
+
 enum Event {
     UpdateNotes { 
         notes: Vec<MidiNote>, 
@@ -147,53 +158,79 @@ impl Plugin for Mugrim {
     fn params(&self) -> Arc<dyn Params> { self.params.clone() }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        let memory_bridge = self.shared_memory.clone();
+    let memory_bridge = self.shared_memory.clone();
+    let params = self.params.clone(); // Clone the pointer so the closure can see it
 
-        Some(Box::new(
-            WebViewEditor::new(
-                HTMLSource::String(include_str!("../ui/index.html")),
-                (1000, 800)
-            )
-            .with_custom_protocol("mugrim".to_string(), move |request| {
-                // The JS UI sends messages to a custom protocol (e.g., mugrim://action)
-                // We extract the JSON body from the request path or body depending on how the UI sends it.
-                // For this setup, we expect the UI to send a stringified JSON action.
-                
-                // Read the JSON string sent from the UI
-                let message = String::from_utf8_lossy(request.body());
+    Some(Box::new(
+        WebViewEditor::new(
+            HTMLSource::String(include_str!("../ui/index.html")),
+            (1000, 800)
+        )
+        .with_custom_protocol("mugrim".to_string(), move |request| {
+            let body = request.body();
+            let message = String::from_utf8_lossy(body);
 
-                if let Ok(action) = serde_json::from_str::<Action>(&message) {
-                    let mut mem = memory_bridge.write().unwrap();
-                    match action {
-                        Action::SetLockZone { start, end, index: _ } => {
-                            for i in start..=end { if i < 256 { mem.lock_map[i] = true; } }
-                        },
-                        Action::ClearLockZone { index: _ } => { mem.lock_map = [false; 256]; },
-                        
-                        Action::AddNote { id, pitch, start, length, velocity } => {
-                            mem.notes.push(MidiNote { id, pitch, start, length, velocity });
-                        },
-                        Action::UpdateNote { id, pitch, start, length, velocity } => {
-                            if let Some(note) = mem.notes.iter_mut().find(|n| n.id == id) {
-                                note.pitch = pitch; note.start = start; 
-                                note.length = length; note.velocity = velocity;
-                            }
-                        },
-                        Action::DeleteNote { id } => {
-                            mem.notes.retain(|n| n.id != id);
-                        },
-                        _ => {}
-                    }
+            if let Ok(action) = serde_json::from_str::<Action>(&message) {
+                let mut mem = memory_bridge.write().unwrap();
+                match action {
+                    Action::AddNote { id, pitch, start, length, velocity } => {
+                        mem.notes.push(MidiNote { id, pitch, start, length, velocity });
+                    },
+                    Action::UpdateNote { id, pitch, start, length, velocity } => {
+                        if let Some(note) = mem.notes.iter_mut().find(|n| n.id == id) {
+                            note.pitch = pitch; note.start = start; 
+                            note.length = length; note.velocity = velocity;
+                        }
+                    },
+                    Action::DeleteNote { id } => {
+                        mem.notes.retain(|n| n.id != id);
+                    },
+                    Action::SetLockZone { start, end, .. } => {
+        for i in start..=end { 
+            if i < 256 { mem.lock_map[i] = true; } 
+        }
+    },
+    Action::ClearLockZone { .. } => { 
+        mem.lock_map = [false; 256]; 
+    },
+   // --- 2. THE MAD SCIENTIST (Direct Memory Access) ---
+    Action::SetRoot { root } => {
+        unsafe {
+            // No type (i32) in the pattern above!
+            let atomic_ptr = &params.root_note as *const _ as *const std::sync::atomic::AtomicI32;
+            (*atomic_ptr).store(root, std::sync::atomic::Ordering::Relaxed);
+        }
+    },
+    Action::SetMode { mode } => {
+        unsafe {
+            let atomic_ptr = &params.scale_mode as *const _ as *const std::sync::atomic::AtomicI32;
+            (*atomic_ptr).store(mode, std::sync::atomic::Ordering::Relaxed);
+        }
+    },
+    Action::SetInternalBpm { bpm } => {
+        unsafe {
+            // Floats are stored as raw bits in the atomic
+            let atomic_ptr = &params.internal_bpm as *const _ as *const std::sync::atomic::AtomicU32;
+            (*atomic_ptr).store(bpm.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+    },
+    Action::ToggleSync { sync } => {
+        unsafe {
+            let atomic_ptr = &params.sync_to_host as *const _ as *const std::sync::atomic::AtomicBool;
+            (*atomic_ptr).store(sync, std::sync::atomic::Ordering::Relaxed);
+        }
+    },
                 }
-                
-                // The protocol handler expects a Result with a dynamic Cow byte slice
-                Ok(nih_plug_webview::http::Response::builder()
-                    .status(200)
-                    .body(std::borrow::Cow::Owned(vec![]))
-                    .unwrap())
-            })
-        ))
-    }
+            }
+
+            // The custom protocol requires this Result/Response wrapper
+            Ok(nih_plug_webview::http::Response::builder()
+                .status(200)
+                .body(std::borrow::Cow::Owned(vec![]))
+                .unwrap())
+        })
+    ))
+}
     fn initialize(&mut self, _io: &AudioIOLayout, _cfg: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool { true }
     fn reset(&mut self) {}
     

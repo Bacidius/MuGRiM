@@ -167,7 +167,12 @@
         const wheelVelocityChk = document.getElementById('wheel-velocity-chk');
 
         // Rust Communication
-        function sendToRust(actionObj) { if (window.ipc) window.ipc.postMessage(JSON.stringify(actionObj)); }
+        function sendToRust(actionObj) {
+            fetch('mugrim://action', {
+                method: 'POST',
+                body: JSON.stringify(actionObj)
+            }).catch(err => console.error("UI Communication Error:", err));
+        }
 
         // --- 2. RENDER THE GRID BACKGROUND ---
         function renderGrid() {
@@ -412,6 +417,31 @@
         // Initialize UI
         renderGrid();
 
+        // --- 5. UI CONTROL LISTENERS ---
+
+// Key/Root Selection
+document.getElementById('key-select').addEventListener('change', (e) => {
+    sendToRust({ type: "SetRoot", root: parseInt(e.target.value) });
+});
+
+// Mode Selection
+document.getElementById('mode-select').addEventListener('change', (e) => {
+    sendToRust({ type: "SetMode", mode: parseInt(e.target.value) });
+});
+
+// Sync Toggle
+document.getElementById('sync-btn').addEventListener('click', (e) => {
+    const btn = e.target;
+    const isSync = !btn.classList.contains('active');
+    btn.classList.toggle('active');
+    document.getElementById('bpm-input').disabled = isSync;
+    sendToRust({ type: "ToggleSync", sync: isSync });
+});
+
+// BPM Input
+document.getElementById('bpm-input').addEventListener('change', (e) => {
+    sendToRust({ type: "SetInternalBpm", bpm: parseFloat(e.target.value) });
+});
     </script>
 </body>
 </html>
