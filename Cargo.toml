@@ -1,0 +1,31 @@
+[package]
+name = "mugrim"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your@email.com>"]
+license = "GPL-3.0-or-later"
+homepage = "https://youtu.be/dQw4w9WgXcQ"
+description = "A short description of your plugin"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+# We swapped this out for the webview engine!
+nih_plug_webview = { git = "https://github.com/robbert-vdh/nih-plug.git" } 
+fastrand = "2.0"
+serde = { version = "1.0", features = ["derive"] } # We need this to turn Rust data into JSON
+serde_json = "1.0"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
