@@ -1,5 +1,5 @@
 use nih_plug::prelude::*;
-use nih_plug_webview::{WebViewEditor, WebViewEditorState};
+use nih_plug_webview::{WebViewEditor, HTMLSource};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -61,6 +61,10 @@ impl Default for SharedMemory {
 struct Mugrim {
     params: Arc<MugrimParams>,
     shared_memory: Arc<RwLock<SharedMemory>>,
+    
+    // NEW: The Mad Scientist's memory
+    last_processed_step: usize,
+    active_live_notes: Vec<u8>, 
 }
 
 impl Default for Mugrim {
@@ -68,6 +72,8 @@ impl Default for Mugrim {
         Self {
             params: Arc::new(MugrimParams::default()),
             shared_memory: Arc::new(RwLock::new(SharedMemory::default())),
+            last_processed_step: 9999, // A dummy value so step 0 triggers immediately
+            active_live_notes: Vec::new(),
         }
     }
 }
@@ -75,8 +81,6 @@ impl Default for Mugrim {
 // --- 5. THE PARAMETERS ---
 #[derive(Params)]
 struct MugrimParams {
-    #[persist = "editor-state"]
-    pub editor_state: Arc<WebViewEditorState>,
 
     // Generative Rules
     #[id = "rest_prob"] pub rest_probability: FloatParam,
@@ -100,7 +104,6 @@ struct MugrimParams {
 impl Default for MugrimParams {
     fn default() -> Self {
         Self {
-            editor_state: WebViewEditorState::from_size(800, 600),
 
             rest_probability: FloatParam::new("Rest Probability", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 }),
             repeat_probability: FloatParam::new("Single Note Repeat", 0.3, FloatRange::Linear { min: 0.0, max: 1.0 }),
@@ -124,18 +127,21 @@ impl Default for MugrimParams {
 }
 
 // --- 6. THE AUDIO/MIDI THREAD ---
+// --- THE AUDIO/MIDI THREAD ---
 impl Plugin for Mugrim {
     const NAME: &'static str = "MuGRiM";
     const VENDOR: &'static str = "Aaron Wesley Arnold";
-    const URL: &'static str = "https://...";
-    const EMAIL: &'static str = "your@email.com";
-    const VERSION: &'static str = "1.0.0";
+    const URL: &'static str = "https://github.com/Bacidius/MuGRiM";
+    const EMAIL: &'static str = "DaddyOmega98049@gmail.com";
+    const VERSION: &'static str = "0.1a";
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[]; 
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
     const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs; 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
     type SysExMessage = ();
+    
+    // NEW: We need state to track notes that are currently playing so we can turn them off
     type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> { self.params.clone() }
@@ -143,10 +149,19 @@ impl Plugin for Mugrim {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let memory_bridge = self.shared_memory.clone();
 
-        WebViewEditor::new(
-            self.params.editor_state.clone(),
-            include_str!("../ui/index.html"),
-            move |_context, message| {
+        Some(Box::new(
+            WebViewEditor::new(
+                HTMLSource::String(include_str!("../ui/index.html")),
+                (1000, 800)
+            )
+            .with_custom_protocol("mugrim".to_string(), move |request| {
+                // The JS UI sends messages to a custom protocol (e.g., mugrim://action)
+                // We extract the JSON body from the request path or body depending on how the UI sends it.
+                // For this setup, we expect the UI to send a stringified JSON action.
+                
+                // Read the JSON string sent from the UI
+                let message = String::from_utf8_lossy(request.body());
+
                 if let Ok(action) = serde_json::from_str::<Action>(&message) {
                     let mut mem = memory_bridge.write().unwrap();
                     match action {
@@ -155,7 +170,6 @@ impl Plugin for Mugrim {
                         },
                         Action::ClearLockZone { index: _ } => { mem.lock_map = [false; 256]; },
                         
-                        // NEW: Piano Roll Modifications
                         Action::AddNote { id, pitch, start, length, velocity } => {
                             mem.notes.push(MidiNote { id, pitch, start, length, velocity });
                         },
@@ -171,13 +185,109 @@ impl Plugin for Mugrim {
                         _ => {}
                     }
                 }
-            },
-        )
+                
+                // The protocol handler expects a Result with a dynamic Cow byte slice
+                Ok(nih_plug_webview::http::Response::builder()
+                    .status(200)
+                    .body(std::borrow::Cow::Owned(vec![]))
+                    .unwrap())
+            })
+        ))
     }
-
     fn initialize(&mut self, _io: &AudioIOLayout, _cfg: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool { true }
     fn reset(&mut self) {}
-    fn process(&mut self, _buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, _context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    
+    // --- THE REAL ENGINE ---
+    fn process(&mut self, _buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+        let transport = context.transport();
+
+        if transport.playing {
+            if let Some(pos_beats) = transport.pos_beats() {
+                // Calculate current 16th note
+                let current_16th = (pos_beats * 4.0) as usize;
+                let step_index = current_16th % 256;
+
+                // We only want to trigger logic EXACTLY when the step changes, not every microsecond
+                if step_index != self.last_processed_step {
+                    self.last_processed_step = step_index;
+
+                    // 1. Turn off any live random notes from the previous step
+                    for pitch in self.active_live_notes.drain(..) {
+                        context.send_event(nih_plug::midi::NoteEvent::NoteOff {
+                            timing: 0, voice_id: None, channel: 0, note: pitch, velocity: 0.0,
+                        });
+                    }
+
+                    if let Ok(mem) = self.shared_memory.try_read() {
+                        // 2. Check the Lock Track!
+                        if mem.lock_map[step_index] {
+                            // --- THE ARCHITECT (Play Saved Notes) ---
+                            for note in &mem.notes {
+                                if note.start == step_index {
+                                    context.send_event(nih_plug::midi::NoteEvent::NoteOn {
+                                        timing: 0, voice_id: Some(note.id as i32), channel: 0, 
+                                        note: note.pitch, velocity: note.velocity as f32 / 127.0, 
+                                    });
+                                }
+                            }
+                        } else {
+                            // --- THE MAD SCIENTIST (Generative Mode) ---
+                            
+                            // Roll for a rest
+                            let rest_prob = self.params.rest_probability.value();
+                            if fastrand::f32() > rest_prob {
+                                
+                                // A simplified minor/Dorian interval map for the heavy riffs
+                                // (We can expand this to all 31 modes later!)
+                                let minor_intervals = [0, 2, 3, 5, 7, 8, 10]; 
+                                
+                                // Pick a random interval from the scale
+                                let random_interval = minor_intervals[fastrand::usize(..minor_intervals.len())];
+                                
+                                // Roll for an octave jump (-1, 0, or +1 octave)
+                                let octave_offsets = [-12i32, 0, 12];
+                                let random_octave = octave_offsets[fastrand::usize(..octave_offsets.len())];
+                                
+                                // Calculate final pitch (Root + Interval + Octave)
+                                let root = self.params.root_note.value(); // e.g., 4 for E
+                                let base_octave = 36; // C2
+                                let final_pitch = (base_octave + root + random_interval as i32 + random_octave) as u8;
+
+                                // Keep it within bounds
+                                if final_pitch >= 24 && final_pitch <= 84 {
+                                    context.send_event(nih_plug::midi::NoteEvent::NoteOn {
+                                        timing: 0, voice_id: None, channel: 0, 
+                                        note: final_pitch, velocity: 0.8, // Hard hit for metal!
+                                    });
+                                    
+                                    // Remember this note so we can kill it next step
+                                    self.active_live_notes.push(final_pitch);
+                                }
+                            }
+                        }
+                        
+                        // 3. Turn off SAVED Piano Roll notes that have reached their length
+                        for note in &mem.notes {
+                            if note.start + note.length == step_index {
+                                context.send_event(nih_plug::midi::NoteEvent::NoteOff {
+                                    timing: 0, voice_id: Some(note.id as i32), channel: 0, 
+                                    note: note.pitch, velocity: 0.0,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Panic Button: If DAW stops, kill all active random notes immediately
+            for pitch in self.active_live_notes.drain(..) {
+                context.send_event(nih_plug::midi::NoteEvent::NoteOff {
+                    timing: 0, voice_id: None, channel: 0, note: pitch, velocity: 0.0,
+                });
+            }
+            self.last_processed_step = 9999;
+        }
+
         ProcessStatus::Normal
     }
 }

@@ -13,13 +13,13 @@ members = ["xtask"]
 [lib]
 crate-type = ["cdylib"]
 
+
 [dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
-# We swapped this out for the webview engine!
-nih_plug_webview = { git = "https://github.com/robbert-vdh/nih-plug.git" } 
-fastrand = "2.0"
-serde = { version = "1.0", features = ["derive"] } # We need this to turn Rust data into JSON
+nih_plug_webview = { git = "https://github.com/httnn/nih-plug-webview.git" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+fastrand = "2.0"
 
 [profile.release]
 lto = "thin"
