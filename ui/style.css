@@ -75,5 +75,33 @@ body {
     box-shadow: 0 0 15px #ffffff;
 }
 
+#main-view {
+    padding: 20px;
+    background: #0c2340; /* Titans blue */
+    color: white;
+    height: 100vh;
+}
 
+.header h1 {
+    font-family: 'Orbitron', sans-serif; /* If you have a tech font */
+    letter-spacing: 3px;
+    color: #4b92db;
+}
+
+.param-group {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+}
+
+.param-group label {
+    font-size: 0.8rem;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+}
+
+input[type="range"] {
+    width: 100%;
+    accent-color: #ff3366; /* Pink to match your notes */
+}
 /* ... Paste all other CSS classes from your index.html here ... */

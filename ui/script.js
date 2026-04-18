@@ -172,3 +172,44 @@ window.addEventListener("message", (event) => {
             window.ipc.postMessage(JSON.stringify({ type: "RequestSync" }));
         }
     }, 100);
+
+    // Get the buttons we named in the HTML
+const toSequencerBtn = document.getElementById('btn-to-sequencer');
+const toMainBtn = document.getElementById('btn-to-main');
+
+// Get the view containers
+const mainView = document.getElementById('main-view');
+const sequencerView = document.getElementById('sequencer-view');
+
+toSequencerBtn.onclick = () => {
+    mainView.style.display = 'none';
+    sequencerView.style.display = 'block';
+};
+
+toMainBtn.onclick = () => {
+    mainView.style.display = 'block';
+    sequencerView.style.display = 'none';
+};
+
+const sliders = ['rest_prob', 'min_pitch', 'max_pitch', 'min_note_length', 'max_note_length']; 
+
+sliders.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+        el.addEventListener('input', (e) => {
+            window.ipc.postMessage(JSON.stringify({
+                type: "SetParameter", // Make sure this matches your Rust Action enum!
+                param: id,
+                value: parseFloat(e.target.value) / 100 
+            }));
+        });
+    }
+});
+
+const overlapToggle = document.getElementById('allow_note_overlap');
+overlapToggle.addEventListener('change', (e) => {
+    window.ipc.postMessage(JSON.stringify({
+        type: "ToggleOverlap",
+        value: e.target.checked
+    }));
+});

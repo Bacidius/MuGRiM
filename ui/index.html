@@ -1,23 +1,33 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MuGRiM Piano Roll</title>
-    <link rel="stylesheet" href="style.css"> </head>
 <body>
-    <div class="controls">
+    <div id="main-view">
+        <div class="header">
+            <h1>THE OMEGA COVENANT</h1>
+            <button id="btn-to-sequencer">OPEN SEQUENCER</button>
         </div>
 
-    <div class="editor-container">
-        <div class="lock-track" id="lock-track"></div>
-        <div class="grid-scroll-area" id="scroll-area" tabindex="0">
-            <div class="piano-keys" id="piano-keys"></div>
-            <div class="grid-content" id="grid-content">
-                <div class="grid-background" id="grid-bg"></div>
+        <div class="controls">
+            <div class="param-group">
+                <label>Rest Probability</label>
+                <input type="range" id="rest_prob" min="0" max="100" value="15">
+            </div>
+            <div class="param-group">
+                <label>Lowest Note</label>
+                <input type="range" id="min_pitch" min="0" max="127" value="30">
+            </div>
+            <div class="param-group">
+                <label>Highest Note</label>
+                <input type="range" id="max_pitch" min="0" max="127" value="52">
             </div>
         </div>
     </div>
-    <div id="piano-roll-container"></div>
-    <script src="script.js"></script> </body>
-</html>
+
+    <div id="sequencer-view" style="display: none;">
+        <div class="header">
+            <button id="btn-to-main">BACK TO DASHBOARD</button>
+        </div>
+        
+        <div id="piano-roll-container"></div>
+    </div>
+
+    <script src="script.js"></script> 
+</body>
