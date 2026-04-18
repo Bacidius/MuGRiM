@@ -1,0 +1,20 @@
+:root {
+    /* Tennessee Titans Theme */
+    --bg: #0C2340; 
+    --panel: #162C4E; 
+    --text: #FFFFFF;
+    --accent-note: #4B92DB; 
+    --accent-lock: #C60C30; 
+    --step-bg: #22334A;
+    --grid-line: #2A3C55;
+    --beat-line: #3B5374;
+    --bar-line: #56739A;
+}
+
+body {
+    background-color: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    margin: 0; padding: 15px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; user-select: none;
+}
+
+/* ... Paste all other CSS classes from your index.html here ... */

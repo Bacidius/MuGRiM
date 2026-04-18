@@ -1,16 +1,16 @@
+use std::sync::{Arc, Mutex};
 use nih_plug::prelude::{
     nih_export_clap, nih_export_vst3, 
-    AudioIOLayout, BufferConfig, Buffer, AuxiliaryBuffers, // Added AuxiliaryBuffers
+    AudioIOLayout, BufferConfig, Buffer, AuxiliaryBuffers,
     Editor, AsyncExecutor, 
     FloatParam, IntParam, BoolParam, FloatRange, IntRange, 
-    InitContext, Params, // Added Param and Params
+    InitContext, Params, 
     MidiConfig, 
     Plugin, ProcessContext, ProcessStatus,
     ClapPlugin, ClapFeature, Vst3Plugin, Vst3SubCategory, 
 };
 use nih_plug_webview::{WebViewEditor, HTMLSource};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, RwLock};
 
 // --- 1. THE MIDI NOTE OBJECT ---
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -32,8 +32,6 @@ enum Action {
     SetInternalBpm { bpm: f32 },
     SetRoot { root: i32 },
     SetMode { mode: i32 }, 
-    
-    // The Piano Roll Actions
     AddNote { id: usize, pitch: u8, start: usize, length: usize, velocity: u8 },
     UpdateNote { id: usize, pitch: u8, start: usize, length: usize, velocity: u8 },
     DeleteNote { id: usize },
@@ -42,7 +40,6 @@ enum Action {
 #[derive(Serialize)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
-
 enum Event {
     UpdateNotes { 
         notes: Vec<MidiNote>, 
@@ -51,49 +48,25 @@ enum Event {
     },
 }
 
-// --- 3. THE SHARED MEMORY ---
-pub struct SharedMemory {
-    pub notes: Vec<MidiNote>,           // Dynamic list of notes instead of a fixed array
-    pub lock_map: [bool; 256],          // True if the user painted a red lock zone
-    pub current_step: usize,
+// --- 3. THE UNIFIED MEMORY ---
+pub struct MugrimMemory {
+    pub notes: Vec<MidiNote>,
+    pub lock_map: [bool; 256],
 }
 
-impl Default for SharedMemory {
+// Manual Default to fix the [bool; 256] array size limit error
+impl Default for MugrimMemory {
     fn default() -> Self {
         Self {
             notes: Vec::new(),
-            lock_map: [false; 256], 
-            current_step: 0,
+            lock_map: [false; 256],
         }
     }
 }
 
-// --- 4. THE PLUGIN CORE ---
-struct Mugrim {
-    params: Arc<MugrimParams>,
-    shared_memory: Arc<RwLock<SharedMemory>>,
-    
-    // NEW: The Mad Scientist's memory
-    last_processed_step: usize,
-    active_live_notes: Vec<u8>, 
-}
-
-impl Default for Mugrim {
-    fn default() -> Self {
-        Self {
-            params: Arc::new(MugrimParams::default()),
-            shared_memory: Arc::new(RwLock::new(SharedMemory::default())),
-            last_processed_step: 9999, // A dummy value so step 0 triggers immediately
-            active_live_notes: Vec::new(),
-        }
-    }
-}
-
-// --- 5. THE PARAMETERS ---
+// --- 4. THE PARAMETERS ---
 #[derive(Params)]
-struct MugrimParams {
-
-    // Generative Rules
+pub struct MugrimParams {
     #[id = "rest_prob"] pub rest_probability: FloatParam,
     #[id = "repeat_prob"] pub repeat_probability: FloatParam,
     #[id = "phrase_prob"] pub phrase_repeat_prob: FloatParam,
@@ -103,19 +76,19 @@ struct MugrimParams {
     #[id = "max_jump"] pub max_jump: IntParam, 
     #[id = "double_stops"] pub allow_double_stops: BoolParam,
 
-    // Theory & Time
     #[id = "root_note"] pub root_note: IntParam,
     #[id = "scale_mode"] pub scale_mode: IntParam, 
     #[id = "ts_top"] pub time_sig_top: IntParam,
     #[id = "ts_bottom"] pub time_sig_bottom: IntParam,
     #[id = "sync_host"] pub sync_to_host: BoolParam,
     #[id = "internal_bpm"] pub internal_bpm: FloatParam,
+    
+    pub mem: Arc<Mutex<MugrimMemory>>, 
 }
 
 impl Default for MugrimParams {
     fn default() -> Self {
         Self {
-
             rest_probability: FloatParam::new("Rest Probability", 0.15, FloatRange::Linear { min: 0.0, max: 1.0 }),
             repeat_probability: FloatParam::new("Single Note Repeat", 0.3, FloatRange::Linear { min: 0.0, max: 1.0 }),
             phrase_repeat_prob: FloatParam::new("Phrase Repeat Chance", 0.25, FloatRange::Linear { min: 0.0, max: 1.0 }),
@@ -125,20 +98,37 @@ impl Default for MugrimParams {
             max_jump: IntParam::new("Max Jump", 12, IntRange::Linear { min: 1, max: 24 }),
             allow_double_stops: BoolParam::new("Allow Double Stops", false),
 
-            root_note: IntParam::new("Root Note", 4, IntRange::Linear { min: 0, max: 11 }), // E
-            scale_mode: IntParam::new("Scale Mode", 1, IntRange::Linear { min: 0, max: 30 }), // Dorian
+            root_note: IntParam::new("Root Note", 4, IntRange::Linear { min: 0, max: 11 }), 
+            scale_mode: IntParam::new("Scale Mode", 1, IntRange::Linear { min: 0, max: 30 }), 
             time_sig_top: IntParam::new("Time Sig Numerator", 4, IntRange::Linear { min: 2, max: 17 }),
             time_sig_bottom: IntParam::new("Time Sig Denominator", 4, IntRange::Linear { min: 2, max: 17 }),
             
-            // THESE FIX YOUR ERROR:
             sync_to_host: BoolParam::new("Sync to DAW", true),
             internal_bpm: FloatParam::new("Internal BPM", 120.0, FloatRange::Linear { min: 20.0, max: 300.0 }),
+            
+            mem: Arc::new(Mutex::new(MugrimMemory::default())),
+        }
+    }
+}
+
+// --- 5. THE PLUGIN CORE ---
+struct Mugrim {
+    params: Arc<MugrimParams>,
+    last_processed_step: usize,
+    active_live_notes: Vec<u8>, 
+}
+
+impl Default for Mugrim {
+    fn default() -> Self {
+        Self {
+            params: Arc::new(MugrimParams::default()),
+            last_processed_step: 9999,
+            active_live_notes: Vec::new(),
         }
     }
 }
 
 // --- 6. THE AUDIO/MIDI THREAD ---
-// --- THE AUDIO/MIDI THREAD ---
 impl Plugin for Mugrim {
     const NAME: &'static str = "MuGRiM";
     const VENDOR: &'static str = "Aaron Wesley Arnold";
@@ -151,114 +141,107 @@ impl Plugin for Mugrim {
     const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs; 
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
     type SysExMessage = ();
-    
-    // NEW: We need state to track notes that are currently playing so we can turn them off
     type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> { self.params.clone() }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-    let memory_bridge = self.shared_memory.clone();
-    let params = self.params.clone(); // Clone the pointer so the closure can see it
+        let html = include_str!("../ui/index.html");
+        let css = include_str!("../ui/style.css");
+        let js = include_str!("../ui/script.js");
 
-    Some(Box::new(
-        WebViewEditor::new(
-            HTMLSource::String(include_str!("../ui/index.html")),
-            (1000, 800)
-        )
-        .with_custom_protocol("mugrim".to_string(), move |request| {
-            let body = request.body();
-            let message = String::from_utf8_lossy(body);
+        let final_html = html
+            .replace("<link rel=\"stylesheet\" href=\"style.css\">", &format!("<style>{}</style>", css))
+            .replace("<script src=\"script.js\"></script>", &format!("<script>{}</script>", js));
 
-            if let Ok(action) = serde_json::from_str::<Action>(&message) {
-                let mut mem = memory_bridge.write().unwrap();
-                match action {
-                    Action::AddNote { id, pitch, start, length, velocity } => {
-                        mem.notes.push(MidiNote { id, pitch, start, length, velocity });
-                    },
-                    Action::UpdateNote { id, pitch, start, length, velocity } => {
-                        if let Some(note) = mem.notes.iter_mut().find(|n| n.id == id) {
-                            note.pitch = pitch; note.start = start; 
-                            note.length = length; note.velocity = velocity;
+        let params = self.params.clone();
+
+        Some(Box::new(
+            WebViewEditor::new(
+                HTMLSource::String(Box::leak(final_html.into_boxed_str())),
+                (1000, 800),
+            )
+            .with_background_color((12, 35, 64, 255))
+            .with_event_loop(move |window_handler, _setter, _window| {
+                while let Ok(json_value) = window_handler.next_event() {
+                    if let Ok(action) = serde_json::from_value::<Action>(json_value) {
+                        let mut mem = params.mem.lock().unwrap(); 
+
+                        match action {
+                            Action::AddNote { id, pitch, start, length, velocity } => {
+                                mem.notes.push(MidiNote { id, pitch, start, length, velocity });
+                            },
+                            Action::UpdateNote { id, pitch, start, length, velocity } => {
+                                // Direct indexing bypasses the MutexGuard borrow checker confusion
+                                for i in 0..mem.notes.len() {
+                                    if mem.notes[i].id == id {
+                                        mem.notes[i].pitch = pitch;
+                                        mem.notes[i].start = start;
+                                        mem.notes[i].length = length;
+                                        mem.notes[i].velocity = velocity;
+                                        break; // Stop searching once we find the right note
+                                    }
+                                }
+                            },
+                            Action::DeleteNote { id } => {
+                                mem.notes.retain(|n| n.id != id);
+                            },
+                            Action::SetLockZone { start, end, .. } => {
+                                for i in start..=end {
+                                    if i < 256 { mem.lock_map[i] = true; }
+                                }
+                            },
+                            Action::ClearLockZone { .. } => {
+                                mem.lock_map = [false; 256];
+                            },
+                            Action::SetRoot { root } => unsafe {
+                                let ptr = &params.root_note as *const _ as *const std::sync::atomic::AtomicI32;
+                                (*ptr).store(root, std::sync::atomic::Ordering::Relaxed);
+                            },
+                            Action::SetMode { mode } => unsafe {
+                                let ptr = &params.scale_mode as *const _ as *const std::sync::atomic::AtomicI32;
+                                (*ptr).store(mode, std::sync::atomic::Ordering::Relaxed);
+                            },
+                            Action::SetInternalBpm { bpm } => unsafe {
+                                let ptr = &params.internal_bpm as *const _ as *const std::sync::atomic::AtomicU32;
+                                // No asterisk! It's just a regular f32 now.
+                                (*ptr).store(bpm.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                            },
+                            Action::ToggleSync { sync } => unsafe {
+                                let ptr = &params.sync_to_host as *const _ as *const std::sync::atomic::AtomicBool;
+                                // No asterisk! It's just a regular bool now.
+                                (*ptr).store(sync, std::sync::atomic::Ordering::Relaxed);
+                            },
                         }
-                    },
-                    Action::DeleteNote { id } => {
-                        mem.notes.retain(|n| n.id != id);
-                    },
-                    Action::SetLockZone { start, end, .. } => {
-        for i in start..=end { 
-            if i < 256 { mem.lock_map[i] = true; } 
-        }
-    },
-    Action::ClearLockZone { .. } => { 
-        mem.lock_map = [false; 256]; 
-    },
-   // --- 2. THE MAD SCIENTIST (Direct Memory Access) ---
-    Action::SetRoot { root } => {
-        unsafe {
-            // No type (i32) in the pattern above!
-            let atomic_ptr = &params.root_note as *const _ as *const std::sync::atomic::AtomicI32;
-            (*atomic_ptr).store(root, std::sync::atomic::Ordering::Relaxed);
-        }
-    },
-    Action::SetMode { mode } => {
-        unsafe {
-            let atomic_ptr = &params.scale_mode as *const _ as *const std::sync::atomic::AtomicI32;
-            (*atomic_ptr).store(mode, std::sync::atomic::Ordering::Relaxed);
-        }
-    },
-    Action::SetInternalBpm { bpm } => {
-        unsafe {
-            // Floats are stored as raw bits in the atomic
-            let atomic_ptr = &params.internal_bpm as *const _ as *const std::sync::atomic::AtomicU32;
-            (*atomic_ptr).store(bpm.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        }
-    },
-    Action::ToggleSync { sync } => {
-        unsafe {
-            let atomic_ptr = &params.sync_to_host as *const _ as *const std::sync::atomic::AtomicBool;
-            (*atomic_ptr).store(sync, std::sync::atomic::Ordering::Relaxed);
-        }
-    },
+                    }
                 }
-            }
+            })
+        ))
+    }
 
-            // The custom protocol requires this Result/Response wrapper
-            Ok(nih_plug_webview::http::Response::builder()
-                .status(200)
-                .body(std::borrow::Cow::Owned(vec![]))
-                .unwrap())
-        })
-    ))
-}
     fn initialize(&mut self, _io: &AudioIOLayout, _cfg: &BufferConfig, _ctx: &mut impl InitContext<Self>) -> bool { true }
     fn reset(&mut self) {}
     
-    // --- THE REAL ENGINE ---
     fn process(&mut self, _buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
         let transport = context.transport();
 
         if transport.playing {
             if let Some(pos_beats) = transport.pos_beats() {
-                // Calculate current 16th note
                 let current_16th = (pos_beats * 4.0) as usize;
                 let step_index = current_16th % 256;
 
-                // We only want to trigger logic EXACTLY when the step changes, not every microsecond
                 if step_index != self.last_processed_step {
                     self.last_processed_step = step_index;
 
-                    // 1. Turn off any live random notes from the previous step
                     for pitch in self.active_live_notes.drain(..) {
                         context.send_event(nih_plug::midi::NoteEvent::NoteOff {
                             timing: 0, voice_id: None, channel: 0, note: pitch, velocity: 0.0,
                         });
                     }
 
-                    if let Ok(mem) = self.shared_memory.try_read() {
-                        // 2. Check the Lock Track!
+                    // We now read from the UNIFIED memory block!
+                    if let Ok(mem) = self.params.mem.try_lock() {
                         if mem.lock_map[step_index] {
-                            // --- THE ARCHITECT (Play Saved Notes) ---
                             for note in &mem.notes {
                                 if note.start == step_index {
                                     context.send_event(nih_plug::midi::NoteEvent::NoteOn {
@@ -268,42 +251,27 @@ impl Plugin for Mugrim {
                                 }
                             }
                         } else {
-                            // --- THE MAD SCIENTIST (Generative Mode) ---
-                            
-                            // Roll for a rest
                             let rest_prob = self.params.rest_probability.value();
                             if fastrand::f32() > rest_prob {
-                                
-                                // A simplified minor/Dorian interval map for the heavy riffs
-                                // (We can expand this to all 31 modes later!)
                                 let minor_intervals = [0, 2, 3, 5, 7, 8, 10]; 
-                                
-                                // Pick a random interval from the scale
                                 let random_interval = minor_intervals[fastrand::usize(..minor_intervals.len())];
-                                
-                                // Roll for an octave jump (-1, 0, or +1 octave)
                                 let octave_offsets = [-12i32, 0, 12];
                                 let random_octave = octave_offsets[fastrand::usize(..octave_offsets.len())];
                                 
-                                // Calculate final pitch (Root + Interval + Octave)
-                                let root = self.params.root_note.value(); // e.g., 4 for E
-                                let base_octave = 36; // C2
+                                let root = self.params.root_note.value();
+                                let base_octave = 36;
                                 let final_pitch = (base_octave + root + random_interval as i32 + random_octave) as u8;
 
-                                // Keep it within bounds
                                 if final_pitch >= 24 && final_pitch <= 84 {
                                     context.send_event(nih_plug::midi::NoteEvent::NoteOn {
                                         timing: 0, voice_id: None, channel: 0, 
-                                        note: final_pitch, velocity: 0.8, // Hard hit for metal!
+                                        note: final_pitch, velocity: 0.8,
                                     });
-                                    
-                                    // Remember this note so we can kill it next step
                                     self.active_live_notes.push(final_pitch);
                                 }
                             }
                         }
                         
-                        // 3. Turn off SAVED Piano Roll notes that have reached their length
                         for note in &mem.notes {
                             if note.start + note.length == step_index {
                                 context.send_event(nih_plug::midi::NoteEvent::NoteOff {
@@ -316,7 +284,6 @@ impl Plugin for Mugrim {
                 }
             }
         } else {
-            // Panic Button: If DAW stops, kill all active random notes immediately
             for pitch in self.active_live_notes.drain(..) {
                 context.send_event(nih_plug::midi::NoteEvent::NoteOff {
                     timing: 0, voice_id: None, channel: 0, note: pitch, velocity: 0.0,
