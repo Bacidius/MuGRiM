@@ -17,4 +17,63 @@ body {
     margin: 0; padding: 15px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; user-select: none;
 }
 
+.glow-active {
+    /* A sharp white flash with a deep Titans-blue aura */
+    background-color: #ffffff !important; 
+    box-shadow: 0 0 10px #4b92db, 0 0 20px #0c2340 inset; 
+    
+    /* A tiny pop animation */
+    transform: scale(1.05); 
+    z-index: 10;
+    
+    /* Fast attack, slightly slower release on the visual fade */
+    transition: background-color 0.05s ease-in, box-shadow 0.1s ease-out, transform 0.05s ease;
+}
+
+#piano-roll-container {
+    display: flex;
+    flex-direction: column;
+    /* Allows horizontal scrolling if 256 steps don't fit the screen */
+    overflow-x: auto; 
+    background-color: #0c2340; /* Deep background */
+}
+
+.piano-row {
+    display: flex;
+    flex-direction: row;
+    height: 20px; /* Adjust based on your UI preference */
+}
+
+.piano-key {
+    width: 30px; /* The width of one 16th note */
+    height: 100%;
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    box-sizing: border-box;
+    cursor: pointer;
+}
+
+/* Optional: Make the first beat of every measure slightly brighter for visual timing */
+.piano-key[data-step$="0"], 
+.piano-key[data-step$="4"], 
+.piano-key[data-step$="8"], 
+.piano-key[data-step$="12"] {
+    border-left: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* The permanent paint for a note you clicked */
+.drawn-note {
+    /* A stark, contrasting color so it stands out against the background and playhead */
+    background-color: #ff3366 !important; 
+    border-radius: 2px;
+    box-shadow: 0 0 5px rgba(255, 51, 102, 0.5);
+}
+
+/* Make sure the playhead glow overrides the drawn note color when it passes over */
+.drawn-note.glow-active {
+    background-color: #ffffff !important;
+    box-shadow: 0 0 15px #ffffff;
+}
+
+
 /* ... Paste all other CSS classes from your index.html here ... */

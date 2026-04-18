@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU32; // <-- This gets its own clean line
 use nih_plug::prelude::{
     nih_export_clap, nih_export_vst3, 
     AudioIOLayout, BufferConfig, Buffer, AuxiliaryBuffers,
-    Editor, AsyncExecutor, 
+    Editor, AsyncExecutor, // <-- Underscore removed here
     FloatParam, IntParam, BoolParam, FloatRange, IntRange, 
     InitContext, Params, 
     MidiConfig, 
@@ -35,6 +36,7 @@ enum Action {
     AddNote { id: usize, pitch: u8, start: usize, length: usize, velocity: u8 },
     UpdateNote { id: usize, pitch: u8, start: usize, length: usize, velocity: u8 },
     DeleteNote { id: usize },
+    GetPlayhead,
 }
 
 #[derive(Serialize)]
@@ -44,14 +46,15 @@ enum Event {
     UpdateNotes { 
         notes: Vec<MidiNote>, 
         current_step: usize,
-        host_tempo: f64 
+        host_tempo: f64
     },
+    UpdatePlayhead { step: u32 },
 }
 
 // --- 3. THE UNIFIED MEMORY ---
 pub struct MugrimMemory {
-    pub notes: Vec<MidiNote>,
-    pub lock_map: [bool; 256],
+    notes: Vec<MidiNote>,
+    lock_map: [bool; 256],
 }
 
 // Manual Default to fix the [bool; 256] array size limit error
@@ -67,23 +70,24 @@ impl Default for MugrimMemory {
 // --- 4. THE PARAMETERS ---
 #[derive(Params)]
 pub struct MugrimParams {
-    #[id = "rest_prob"] pub rest_probability: FloatParam,
-    #[id = "repeat_prob"] pub repeat_probability: FloatParam,
-    #[id = "phrase_prob"] pub phrase_repeat_prob: FloatParam,
-    #[id = "phrase_length"] pub phrase_length: IntParam,
-    #[id = "min_pitch"] pub min_pitch: IntParam,
-    #[id = "max_pitch"] pub max_pitch: IntParam,
-    #[id = "max_jump"] pub max_jump: IntParam, 
-    #[id = "double_stops"] pub allow_double_stops: BoolParam,
+    pub rest_probability: FloatParam,
+    pub repeat_probability: FloatParam,
+    pub phrase_repeat_prob: FloatParam,
+    pub phrase_length: IntParam,
+    pub min_pitch: IntParam,
+    pub max_pitch: IntParam,
+    pub max_jump: IntParam, 
+    pub allow_double_stops: BoolParam,
 
-    #[id = "root_note"] pub root_note: IntParam,
-    #[id = "scale_mode"] pub scale_mode: IntParam, 
-    #[id = "ts_top"] pub time_sig_top: IntParam,
-    #[id = "ts_bottom"] pub time_sig_bottom: IntParam,
-    #[id = "sync_host"] pub sync_to_host: BoolParam,
-    #[id = "internal_bpm"] pub internal_bpm: FloatParam,
-    
+    pub root_note: IntParam,
+    pub scale_mode: IntParam, 
+    pub time_sig_top: IntParam,
+    pub time_sig_bottom: IntParam,
+    pub sync_to_host: BoolParam,
+    pub internal_bpm: FloatParam,
+
     pub mem: Arc<Mutex<MugrimMemory>>, 
+    pub active_step: Arc<AtomicU32>,
 }
 
 impl Default for MugrimParams {
@@ -107,7 +111,8 @@ impl Default for MugrimParams {
             internal_bpm: FloatParam::new("Internal BPM", 120.0, FloatRange::Linear { min: 20.0, max: 300.0 }),
             
             mem: Arc::new(Mutex::new(MugrimMemory::default())),
-        }
+            active_step: Arc::new(AtomicU32::new(9999)),
+     }
     }
 }
 
@@ -212,6 +217,14 @@ impl Plugin for Mugrim {
                                 // No asterisk! It's just a regular bool now.
                                 (*ptr).store(sync, std::sync::atomic::Ordering::Relaxed);
                             },
+                            Action::GetPlayhead => {
+            // Read the current step from the audio thread
+            let step = params.active_step.load(std::sync::atomic::Ordering::Relaxed);
+            
+            // Fire it back to JavaScript!
+            let payload = serde_json::to_value(&Event::UpdatePlayhead { step }).unwrap();
+            window_handler.send_json(payload);
+        },
                         }
                     }
                 }
@@ -232,7 +245,7 @@ impl Plugin for Mugrim {
 
                 if step_index != self.last_processed_step {
                     self.last_processed_step = step_index;
-
+                        self.params.active_step.store(step_index as u32, std::sync::atomic::Ordering::Relaxed);
                     for pitch in self.active_live_notes.drain(..) {
                         context.send_event(nih_plug::midi::NoteEvent::NoteOff {
                             timing: 0, voice_id: None, channel: 0, note: pitch, velocity: 0.0,
