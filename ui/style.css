@@ -45,12 +45,12 @@ body {
 }
 
 .piano-key {
-    width: 30px; /* The width of one 16th note */
+    width: 30px; 
     height: 100%;
-    border-right: 1px solid rgba(255, 255, 255, 0.1);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    flex-shrink: 0; /* <--- CRITICAL: Stops the "Picket Fence" effect */
+    border-right: 1px solid rgba(255, 255, 255, 0.2);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     box-sizing: border-box;
-    cursor: pointer;
 }
 
 /* Optional: Make the first beat of every measure slightly brighter for visual timing */
@@ -58,7 +58,7 @@ body {
 .piano-key[data-step$="4"], 
 .piano-key[data-step$="8"], 
 .piano-key[data-step$="12"] {
-    border-left: 1px solid rgba(255, 255, 255, 0.3);
+    border-left: 2px solid rgba(255, 255, 255, 0.8);
 }
 
 /* The permanent paint for a note you clicked */
